@@ -1,144 +1,145 @@
+-- lsp.lua
+-- Per-server opt-in to prefer a user-local binary (e.g. in ~/.local/bin) or let Mason manage it.
+-- Drop this into your plugin config (the same place you had your previous lsp.lua).
+
 return {
   {
-    -- `lazydev` configures Lua LSP for your Neovim config, runtime and plugins
-    -- used for completion, annotations and signatures of Neovim apis
-    'folke/lazydev.nvim',
-    ft = 'lua',
-    opts = {
-      library = {
-        -- Load luvit types when the `vim.uv` word is found
-        { path = '${3rd}/luv/library', words = { 'vim%.uv' } },
-      },
-    },
-  },
-  {
-    -- Main LSP Configuration
     'neovim/nvim-lspconfig',
     dependencies = {
-      -- Automatically install LSPs and related tools to stdpath for Neovim
-      -- Mason must be loaded before its dependents so we need to set it up here.
-      -- NOTE: `opts = {}` is the same as calling `require('mason').setup({})`
       { 'williamboman/mason.nvim', opts = {} },
-      'williamboman/mason-lspconfig.nvim',
-      'WhoIsSethDaniel/mason-tool-installer.nvim',
-
-      -- Useful status updates for LSP.
+      	'williamboman/mason-lspconfig.nvim',
+      	'WhoIsSethDaniel/mason-tool-installer.nvim',
       { 'j-hui/fidget.nvim', opts = {} },
-
-      -- Allows extra capabilities provided by nvim-cmp
-      'hrsh7th/cmp-nvim-lsp',
+      	'hrsh7th/cmp-nvim-lsp',
     },
     config = function()
-      -- Ensure Neovim prefers ~/.local/bin so any working user-installed
-      -- language server there is found before Mason's copy.
-      -- (This must run before lspconfig/mason-lspconfig do executable discovery.)
+
+			local has_new_diag = vim.fn.has("nvim-0.10") == 1
+
+			vim.diagnostic.config({
+  			virtual_text = false,
+  			virtual_lines = has_new_diag,  -- true on 0.10+, false otherwise
+  			signs = true,
+  			underline = true,
+  			update_in_insert = false,
+  			severity_sort = true,
+  			float = {
+    			border = "rounded",
+    			source = "if_many",
+    			focusable = false,
+  			},
+			})
+
+
+      -- Prefer user-local binaries by putting ~/.local/bin first in Neovim's PATH.
+      -- This lets vim.fn.exepath() find user-installed servers before system/Mason ones.
       vim.env.PATH = vim.fn.expand("~/.local/bin:") .. vim.env.PATH
 
-      -- Resolve the actual lua-language-server executable that Neovim will use.
-      -- Prefer whatever is found on PATH (vim.fn.exepath), fallback to
-      -- the explicit ~/.local/bin path you mentioned.
-      local lua_ls_exe = vim.fn.exepath("lua-language-server")
-      if lua_ls_exe == "" then
-        lua_ls_exe = vim.fn.expand("~/.local/bin/lua-language-server")
+      -- Toggle per-server: true = prefer local binary, false = prefer Mason-managed
+      local prefer_local = {
+        lua_ls  = true,
+        pyright = true,
+        clangd  = true,
+      }
+
+      -- What local binary names (and args) to look for when prefer_local is true.
+      -- First element is the executable name looked up with exepath().
+      local local_bins = {
+        lua_ls  = { "lua-language-server" },           -- adjust if your binary needs args
+        pyright = { "pyright-langserver", "--stdio" }, -- pyright-langserver usually uses --stdio
+        clangd  = { "clangd" },                        -- clangd typically needs no extra args
+      }
+
+      -- Utility: check whether local binary exists and return a cmd table or nil.
+      local function local_cmd_for(server_name)
+        local info = local_bins[server_name]
+        if not info then return nil end
+        local exe = vim.fn.exepath(info[1])
+        if exe == "" then return nil end
+        local cmd = { exe }
+        for i = 2, #info do table.insert(cmd, info[i]) end
+        return cmd
       end
 
-      --  This function gets run when an LSP attaches to a particular buffer.
-      --    That is to say, every time a new file is opened that is associated with
-      --    an lsp (for example, opening `main.rs` is associated with `rust_analyzer`) this
-      --    function will be executed to configure the current buffer
-      vim.api.nvim_create_autocmd('LspAttach', {
-        group = vim.api.nvim_create_augroup('kickstart-lsp-attach', { clear = true }),
-        callback = function(event)
-          local map = function(keys, func, desc, mode)
-            mode = mode or 'n'
-            vim.keymap.set(mode, keys, func, { buffer = event.buf, desc = 'LSP: ' .. desc })
-          end
-
-          map('gd', require('telescope.builtin').lsp_definitions, '[G]oto [D]efinition')
-          map('gr', require('telescope.builtin').lsp_references, '[G]oto [R]eferences')
-          map('gI', require('telescope.builtin').lsp_implementations, '[G]oto [I]mplementation')
-          map('<leader>D', require('telescope.builtin').lsp_type_definitions, 'Type [D]efinition')
-          map('<leader>ds', require('telescope.builtin').lsp_document_symbols, '[D]ocument [S]ymbols')
-          map('<leader>ws', require('telescope.builtin').lsp_dynamic_workspace_symbols, '[W]orkspace [S]ymbols')
-          map('<leader>rn', vim.lsp.buf.rename, '[R]e[n]ame')
-          map('<leader>ca', vim.lsp.buf.code_action, '[C]ode [A]ction', { 'n', 'x' })
-          map('gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
-
-          local client = vim.lsp.get_client_by_id(event.data.client_id)
-          if client and client:supports_method(vim.lsp.protocol.Methods.textDocument_documentHighlight) then
-            local highlight_augroup = vim.api.nvim_create_augroup('kickstart-lsp-highlight', { clear = false })
-            vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
-              buffer = event.buf,
-              group = highlight_augroup,
-              callback = vim.lsp.buf.document_highlight,
-            })
-
-            vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
-              buffer = event.buf,
-              group = highlight_augroup,
-              callback = vim.lsp.buf.clear_references,
-            })
-
-            vim.api.nvim_create_autocmd('LspDetach', {
-              group = vim.api.nvim_create_augroup('kickstart-lsp-detach', { clear = true }),
-              callback = function(event2)
-                vim.lsp.buf.clear_references()
-                vim.api.nvim_clear_autocmds({ group = 'kickstart-lsp-highlight', buffer = event2.buf })
-              end,
-            })
-          end
-
-          if client and client:supports_method(vim.lsp.protocol.Methods.textDocument_inlayHint) then
-            map('<leader>th', function()
-              vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled({ bufnr = event.buf }))
-            end, '[T]oggle Inlay [H]ints')
-          end
-        end,
-      })
-
+      -- Servers definitions; we will set `cmd` to the local cmd if found (and preferred),
+      -- otherwise leave cmd = nil to let lspconfig/mason-lspconfig supply the default.
       local capabilities = vim.lsp.protocol.make_client_capabilities()
       capabilities = vim.tbl_deep_extend('force', capabilities, require('cmp_nvim_lsp').default_capabilities())
 
-      -- Enable the following language servers
-      local servers = {
-        lua_ls = {
-          -- Use the resolved executable above. lspconfig expects a table where the
-          -- first element is the executable and following elements are args.
-          -- If your local binary requires additional args (e.g. "-E /path/main.lua"),
-          -- add them here: { lua_ls_exe, "-E", "/full/path/to/main.lua" }
-          cmd = { lua_ls_exe },
-          filetypes = { "lua" },
-          capabilities = capabilities,
-          settings = {
-            Lua = {
-              completion = {
-                callSnippet = 'Replace',
-              },
-              -- diagnostics = { disable = { 'missing-fields' } },
-            },
-          },
-        },
-      }
+      local all_server_names = { "lua_ls", "pyright", "clangd" }
 
-      local ensure_installed = vim.tbl_keys(servers or {})
-      vim.list_extend(ensure_installed, {
-        'stylua', -- Used to format Lua code
-      })
+      local servers = {}
+      local ensure_installed = {} -- list passed to mason-tool-installer (only servers we want Mason to install)
+
+      for _, name in ipairs(all_server_names) do
+        local server_conf = {
+          filetypes = (name == "lua_ls") and { "lua" } or nil,
+          capabilities = capabilities,
+        }
+
+        if prefer_local[name] then
+          local cmd = local_cmd_for(name)
+          if cmd then
+            server_conf.cmd = cmd
+            -- optional: notify user which local binary is used
+            vim.notify(string.format("Using local %s: %s", name, table.concat(cmd, " ")), vim.log.levels.INFO)
+          else
+            -- local requested but not found -> fall back to Mason/default
+            table.insert(ensure_installed, name)
+            vim.schedule(function()
+              vim.notify(string.format("Local binary for %s not found; Mason will be used when available.", name), vim.log.levels.WARN)
+            end)
+          end
+        else
+          -- prefer Mason/system: ensure Mason installs it
+          table.insert(ensure_installed, name)
+        end
+
+        -- server-specific settings (example for lua_ls)
+        if name == "lua_ls" then
+          server_conf.settings = {
+            Lua = {
+              completion = { callSnippet = "Replace" },
+              workspace = { library = vim.api.nvim_get_runtime_file("", true) },
+            },
+          }
+        end
+
+        servers[name] = server_conf
+      end
+
+      -- Always ensure stylua is installed for formatting (adjust if not desired)
+      table.insert(ensure_installed, "stylua")
+
+      -- Setup mason-tool-installer with only the servers we want Mason to manage
       require('mason-tool-installer').setup({ ensure_installed = ensure_installed })
 
+      -- Setup mason-lspconfig and lspconfig - handlers will use our servers table
       require('mason-lspconfig').setup({
+        ensure_installed = ensure_installed,
         handlers = {
-          function(server_name)
+          function(server_name) -- default handler
             local server = servers[server_name] or {}
             server.capabilities = vim.tbl_deep_extend('force', {}, capabilities, server.capabilities or {})
             require('lspconfig')[server_name].setup(server)
           end,
         },
       })
+
+      -- LspAttach autocmd example (keymaps, highlights) -- keep whatever you already use.
+      vim.api.nvim_create_autocmd('LspAttach', {
+        group = vim.api.nvim_create_augroup('user-lsp-attach', { clear = true }),
+        callback = function(args)
+          local client = vim.lsp.get_client_by_id(args.data.client_id)
+          if not client then return end
+          local buf = args.buf
+          local function buf_map(mode, lhs, rhs, desc)
+            vim.keymap.set(mode, lhs, rhs, { buffer = buf, desc = desc })
+          end
+          buf_map('n', 'gd', vim.lsp.buf.definition, 'LSP: goto def')
+          buf_map('n', 'gr', vim.lsp.buf.references, 'LSP: refs')
+        end,
+      })
     end,
   },
 }
-
-
-
-
